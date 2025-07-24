@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>📏 Camera Measure</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            font-family: 'Arial', sans-serif;
+            touch-action: none;
+        }
+        
+        #camera-container {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+        }
+        
+        #video {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        
+        #canvas {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+        
+        #info-panel {
+            position: absolute;
+            bottom: 20px;
+            left: 0;
+            right: 0;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 15px;
+            text-align: center;
+            font-size: 18px;
+            border-radius: 0;
+        }
+        
+        #distance-display {
+            font-size: 24px;
+            font-weight: bold;
+            margin: 5px 0;
+        }
+        
+        #instructions {
+            font-size: 16px;
+            opacity: 0.9;
+        }
+        
+        #controls {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            z-index: 100;
+        }
+        
+        .control-btn {
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            font-size: 24px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        #reference-panel {
+            position: absolute;
+            bottom: 80px;
+            left: 20px;
+            background-color: rgba(0,0,0,0.7);
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            max-width: 300px;
+        }
+        
+        #reference-input {
+            width: 60px;
+            padding: 8px;
+            margin: 0 5px;
+            border-radius: 4px;
+            border: none;
+        }
+        
+        .marker {
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            background-color: red;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            z-index: 10;
+        }
+        
+        #loading {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(0,0,0,0.8);
+            color: white;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+    <div id="camera-container">
+        <video id="video" autoplay playsinline></video>
+        <canvas id="canvas"></canvas>
+        
+        <div id="controls">
+            <button class="control-btn" id="reset-btn" title="Reset">↻</button>
+            <button class="control-btn" id="unit-btn" title="Switch units">m/ft</button>
+        </div>
+        
+        <div id="reference-panel">
+            <div>First measure a known reference:</div>
+            <div style="margin-top: 10px;">
+                <input id="reference-input" type="number" value="1.0" min="0.1" step="0.1">
+                <select id="unit-select">
+                    <option value="m">meters</option>
+                    <option value="cm">centimeters</option>
+                    <option value="ft">feet</option>
+                </select>
+                <button id="set-ref-btn">Set</button>
+            </div>
+        </div>
+        
+        <div id="info-panel">
+            <div id="distance-display">0.00 m</div>
+            <div id="instructions">Set reference first</div>
+        </div>
+    </div>
+    
+    <div id="loading">
+        <h2>📏 Camera Measure</h2>
+        <p>Initializing camera...</p>
+    </div>
+
+    <script>
+        // Main app variables
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const distanceDisplay = document.getElementById('distance-display');
+        const instructions = document.getElementById('instructions');
+        const resetBtn = document.getElementById('reset-btn');
+        const unitBtn = document.getElementById('unit-btn');
+        const referenceInput = document.getElementById('reference-input');
+        const unitSelect = document.getElementById('unit-select');
+        const setRefBtn = document.getElementById('set-ref-btn');
+        const loadingScreen = document.getElementById('loading');
+        
+        let markers = [];
+        let referenceLength = 1.0; // in meters
+        let referencePixels = 0;
+        let isSettingReference = false;
+        let isMetric = true;
+        let videoWidth, videoHeight;
+        
+        // Initialize the app
+        init();
+        
+        async function init() {
+            try {
+                // Set up camera
+                await setupCamera();
+                
+                // Set canvas size
+                resizeCanvas();
+                
+                // Set up event listeners
+                setupEventListeners();
+                
+                // Hide loading screen
+                loadingScreen.style.display = 'none';
+                
+                // Start in reference setting mode
+                startReferenceMeasurement();
+                
+            } catch (error) {
+                loadingScreen.innerHTML = `<h2>⚠️ Error</h2><p>${error.message}</p>`;
+                console.error("Initialization failed:", error);
+            }
+        }
+        
+        async function setupCamera() {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: {
+                    facingMode: 'environment',
+                    width: { ideal: 1920 },
+                    height: { ideal: 1080 }
+                }
+            });
+            
+            video.srcObject = stream;
+            
+            return new Promise((resolve) => {
+                video.onloadedmetadata = () => {
+                    videoWidth = video.videoWidth;
+                    videoHeight = video.videoHeight;
+                    resolve();
+                };
+            });
+        }
+        
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        
+        function setupEventListeners() {
+            // Handle screen taps
+            canvas.addEventListener('click', handleTap);
+            
+            // Handle reset button
+            resetBtn.addEventListener('click', resetMeasurement);
+            
+            // Handle unit toggle
+            unitBtn.addEventListener('click', toggleUnits);
+            
+            // Handle reference setting
+            setRefBtn.addEventListener('click', startReferenceMeasurement);
+            
+            // Handle window resize
+            window.addEventListener('resize', () => {
+                resizeCanvas();
+                if (markers.length === 2) {
+                    drawMeasurementLine();
+                }
+            });
+        }
+        
+        function handleTap(event) {
+            // Get click position
+            const rect = canvas.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+            
+            if (isSettingReference) {
+                placeMarker(x, y);
+                
+                if (markers.length === 2) {
+                    completeReferenceMeasurement();
+                }
+            } else {
+                if (markers.length < 2) {
+                    placeMarker(x, y);
+                    
+                    if (markers.length === 2) {
+                        calculateDistance();
+                    }
+                }
+            }
+        }
+        
+        function placeMarker(x, y) {
+            // Create visual marker
+            const marker = document.createElement('div');
+            marker.className = 'marker';
+            marker.style.left = `${x}px`;
+            marker.style.top = `${y}px`;
+            document.body.appendChild(marker);
+            
+            // Store marker position
+            markers.push({ x, y, element: marker });
+            
+            updateInstructions();
+        }
+        
+        function completeReferenceMeasurement() {
+            if (markers.length < 2) return;
+            
+            // Get the reference length in meters
+            const unit = unitSelect.value;
+            let length = parseFloat(referenceInput.value) || 1.0;
+            
+            // Convert to meters
+            if (unit === 'cm') length /= 100;
+            if (unit === 'ft') length *= 0.3048;
+            
+            referenceLength = length;
+            
+            // Calculate pixel distance between reference points
+            const dx = markers[1].x - markers[0].x;
+            const dy = markers[1].y - markers[0].y;
+            referencePixels = Math.sqrt(dx * dx + dy * dy);
+            
+            // Clear reference points
+            resetMeasurement();
+            
+            // Ready for measurements
+            isSettingReference = false;
+            instructions.textContent = "Tap to measure objects";
+            
+            // Show confirmation
+            setTimeout(() => {
+                instructions.textContent = "Tap to place points";
+            }, 2000);
+        }
+        
+        function calculateDistance() {
+            if (markers.length < 2 || referencePixels === 0) return;
+            
+            // Calculate pixel distance between markers
+            const dx = markers[1].x - markers[0].x;
+            const dy = markers[1].y - markers[0].y;
+            const pixelDistance = Math.sqrt(dx * dx + dy * dy);
+            
+            // Calculate real distance based on reference
+            const realDistance = (pixelDistance / referencePixels) * referenceLength;
+            
+            // Draw line between markers
+            drawMeasurementLine();
+            
+            // Display distance
+            displayDistance(realDistance);
+        }
+        
+        function drawMeasurementLine() {
+            // Clear previous drawings
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            if (markers.length < 2) return;
+            
+            // Draw line
+            ctx.beginPath();
+            ctx.moveTo(markers[0].x, markers[0].y);
+            ctx.lineTo(markers[1].x, markers[1].y);
+            ctx.strokeStyle = '#00FF00';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+            
+            // Draw endpoints
+            ctx.beginPath();
+            ctx.arc(markers[0].x, markers[0].y, 5, 0, Math.PI * 2);
+            ctx.arc(markers[1].x, markers[1].y, 5, 0, Math.PI * 2);
+            ctx.fillStyle = '#FF0000';
+            ctx.fill();
+        }
+        
+        function displayDistance(distance) {
+            if (isMetric) {
+                distanceDisplay.textContent = `${distance.toFixed(2)} m`;
+            } else {
+                const feet = distance * 3.28084;
+                distanceDisplay.textContent = `${feet.toFixed(2)} ft`;
+            }
+        }
+        
+        function updateInstructions() {
+            if (isSettingReference) {
+                instructions.textContent = `Place ${2 - markers.length} more points for reference`;
+            } else {
+                instructions.textContent = `Points placed: ${markers.length}/2`;
+            }
+        }
+        
+        function resetMeasurement() {
+            // Remove all markers
+            markers.forEach(marker => marker.element.remove());
+            markers = [];
+            
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Reset display
+            distanceDisplay.textContent = "0.00 m";
+        }
+        
+        function toggleUnits() {
+            isMetric = !isMetric;
+            unitBtn.textContent = isMetric ? "m/ft" : "ft/m";
+            
+            // Update displayed distance if available
+            if (markers.length === 2 && referencePixels > 0) {
+                const pixelDistance = Math.sqrt(
+                    Math.pow(markers[1].x - markers[0].x, 2) + 
+                    Math.pow(markers[1].y - markers[0].y, 2)
+                );
+                const realDistance = (pixelDistance / referencePixels) * referenceLength;
+                displayDistance(realDistance);
+            }
+        }
+        
+        function startReferenceMeasurement() {
+            resetMeasurement();
+            isSettingReference = true;
+            instructions.textContent = "Place 2 points to set reference";
+        }
+    </script>
+</body>
+</html>
